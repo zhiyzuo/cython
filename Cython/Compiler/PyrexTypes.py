@@ -172,7 +172,9 @@ class PyrexType(BaseType):
     #  is_ptr                boolean     Is a C pointer type
     #  is_null_ptr           boolean     Is the type of NULL
     #  is_reference          boolean     Is a C reference type
-    #  is_const              boolean     Is a C const type.
+    #  is_const              boolean     Is a C const type
+    #  is_volatile           boolean     Is a C volatile type
+    #  is_const_or_volatile  boolean     Is a C const or volatile type
     #  is_cfunction          boolean     Is a C function type
     #  is_struct_or_union    boolean     Is a C struct or union type
     #  is_struct             boolean     Is a C struct type
@@ -229,6 +231,8 @@ class PyrexType(BaseType):
     is_null_ptr = 0
     is_reference = 0
     is_const = 0
+    is_volatile = 0
+    is_const_or_volatile = 0
     is_cfunction = 0
     is_struct_or_union = 0
     is_cpp_class = 0
@@ -1451,49 +1455,65 @@ class CType(PyrexType):
             code.error_goto_if(error_condition or self.error_condition(result_code), error_pos))
 
 
-class CConstType(BaseType):
+class CConstOrVolatileType(BaseType):
+    "A C const or volatile type"
 
-    is_const = 1
+    is_const_or_volatile = 1
 
-    def __init__(self, const_base_type):
-        self.const_base_type = const_base_type
-        if const_base_type.has_attributes and const_base_type.scope is not None:
-            from . import Symtab
-            self.scope = Symtab.CConstScope(const_base_type.scope)
+    def __init__(self, base_type, is_const=0, is_volatile=0):
+        self.cv_base_type = base_type
+        self.is_const = is_const
+        self.is_volatile = is_volatile
+        if base_type.has_attributes and base_type.scope is not None:
+            from .Symtab import CConstOrVolatileScope
+            self.scope = CConstOrVolatileScope(base_type.scope, is_const, is_volatile)
+
+    def cv_string(self):
+        cvstring = ""
+        if self.is_const:
+            cvstring = "const " + cvstring
+        if self.is_volatile:
+            cvstring = "volatile " + cvstring
+        return cvstring
 
     def __repr__(self):
-        return "<CConstType %s>" % repr(self.const_base_type)
+        return "<CConstOrVolatileType %s%r>" % (self.cv_string(), self.cv_base_type)
 
     def __str__(self):
         return self.declaration_code("", for_display=1)
 
     def declaration_code(self, entity_code,
             for_display = 0, dll_linkage = None, pyrex = 0):
+        cv = self.cv_string()
         if for_display or pyrex:
-            return "const " + self.const_base_type.declaration_code(entity_code, for_display, dll_linkage, pyrex)
+            return cv + self.cv_base_type.declaration_code(entity_code, for_display, dll_linkage, pyrex)
         else:
-            return self.const_base_type.declaration_code("const %s" % entity_code, for_display, dll_linkage, pyrex)
+            return self.cv_base_type.declaration_code(cv + entity_code, for_display, dll_linkage, pyrex)
 
     def specialize(self, values):
-        base_type = self.const_base_type.specialize(values)
-        if base_type == self.const_base_type:
+        base_type = self.cv_base_type.specialize(values)
+        if base_type == self.cv_base_type:
             return self
-        else:
-            return CConstType(base_type)
+        return CConstOrVolatileType(base_type,
+                self.is_const, self.is_volatile)
 
     def deduce_template_params(self, actual):
-        return self.const_base_type.deduce_template_params(actual)
+        return self.cv_base_type.deduce_template_params(actual)
 
     def can_coerce_to_pyobject(self, env):
-        return self.const_base_type.can_coerce_to_pyobject(env)
+        return self.cv_base_type.can_coerce_to_pyobject(env)
 
     def create_to_py_utility_code(self, env):
-        if self.const_base_type.create_to_py_utility_code(env):
-            self.to_py_function = self.const_base_type.to_py_function
+        if self.cv_base_type.create_to_py_utility_code(env):
+            self.to_py_function = self.cv_base_type.to_py_function
             return True
 
     def __getattr__(self, name):
-        return getattr(self.const_base_type, name)
+        return getattr(self.cv_base_type, name)
+
+
+def CConstType(base_type):
+    return CConstOrVolatileType(base_type, is_const=1)
 
 
 class FusedType(CType):
@@ -2154,8 +2174,8 @@ class CPointerBaseType(CType):
 
     def __init__(self, base_type):
         self.base_type = base_type
-        if base_type.is_const:
-            base_type = base_type.const_base_type
+        if base_type.is_const_or_volatile:
+            base_type = base_type.cv_base_type
         for char_type in (c_char_type, c_uchar_type, c_schar_type):
             if base_type.same_as(char_type):
                 self.is_string = 1
@@ -2376,8 +2396,8 @@ class CPtrType(CPointerBaseType):
             return 1
         if other_type.is_null_ptr:
             return 1
-        if self.base_type.is_const:
-            self = CPtrType(self.base_type.const_base_type)
+        if self.base_type.is_const_or_volatile:
+            self = CPtrType(self.base_type.cv_base_type)
         if self.base_type.is_cfunction:
             if other_type.is_ptr:
                 other_type = other_type.base_type.resolve()
@@ -3509,8 +3529,8 @@ class CppClassType(CType):
         return specialized
 
     def deduce_template_params(self, actual):
-        if actual.is_const:
-            actual = actual.const_base_type
+        if actual.is_const_or_volatile:
+            actual = actual.cv_base_type
         if actual.is_reference:
             actual = actual.ref_base_type
         if self == actual:
@@ -4444,6 +4464,13 @@ def c_const_type(base_type):
         return error_type
     else:
         return CConstType(base_type)
+
+def c_const_or_volatile_type(base_type, is_const, is_volatile):
+    # Construct a C const/volatile type.
+    if base_type is error_type:
+        return error_type
+    else:
+        return CConstOrVolatileType(base_type, is_const, is_volatile)
 
 def same_type(type1, type2):
     return type1.same_as(type2)

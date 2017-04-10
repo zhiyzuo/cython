@@ -314,8 +314,8 @@ def p_typecast(s):
     base_type = p_c_base_type(s)
     is_memslice = isinstance(base_type, Nodes.MemoryViewSliceTypeNode)
     is_template = isinstance(base_type, Nodes.TemplatedTypeNode)
-    is_const = isinstance(base_type, Nodes.CConstTypeNode)
-    if (not is_memslice and not is_template and not is_const
+    is_cv = isinstance(base_type, Nodes.CConstOrVolatileTypeNode)
+    if (not is_memslice and not is_template and not is_cv
         and base_type.name is None):
         s.error("Unknown type")
     declarator = p_c_declarator(s, empty = 1)
@@ -2436,11 +2436,21 @@ def p_c_simple_base_type(s, self_flag, nonempty, templates = None):
     pos = s.position()
     if not s.sy == 'IDENT':
         error(pos, "Expected an identifier, found '%s'" % s.sy)
-    if s.systring == 'const':
-        s.next()
+    if s.systring in ['const', 'volatile']:
+        is_const = 0
+        is_volatile = 0
+        while True:
+            if s.systring == 'const':
+                is_const = 1
+            elif s.systring == 'volatile':
+                is_volatile = 1
+            else:
+                break
+            s.next()
         base_type = p_c_base_type(s,
             self_flag = self_flag, nonempty = nonempty, templates = templates)
-        return Nodes.CConstTypeNode(pos, base_type = base_type)
+        return Nodes.CConstOrVolatileTypeNode(pos, base_type=base_type,
+                is_const=is_const, is_volatile=is_volatile)
     if looking_at_base_type(s):
         #print "p_c_simple_base_type: looking_at_base_type at", s.position()
         is_basic = 1

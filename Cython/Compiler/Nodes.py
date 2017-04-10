@@ -1222,8 +1222,10 @@ class FusedTypeNode(CBaseTypeNode):
         return PyrexTypes.FusedType(types, name=self.name)
 
 
-class CConstTypeNode(CBaseTypeNode):
+class CConstOrVolatileTypeNode(CBaseTypeNode):
     # base_type     CBaseTypeNode
+    # is_const      boolean
+    # is_volatile   boolean
 
     child_attrs = ["base_type"]
 
@@ -1232,7 +1234,7 @@ class CConstTypeNode(CBaseTypeNode):
         if base.is_pyobject:
             error(self.pos,
                   "Const base type cannot be a Python object")
-        return PyrexTypes.c_const_type(base)
+        return PyrexTypes.c_const_or_volatile_type(base, self.is_const, self.is_volatile)
 
 
 class CVarDefNode(StatNode):
